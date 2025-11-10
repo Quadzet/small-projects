@@ -3,15 +3,38 @@
 #include <stdbool.h>
 #include <string.h>
 #include <stdlib.h>
+#include <time.h>
 
 // Constants
 #define TOTAL_POINTS 51
 #define MAX_NODES_PER_TREE 20
 #define TOTAL_TREES 3
+#define MEMO_INTERVAL 1
+#define MEMO_TABLE_SIZE 10000000  // 10M entries
 
-// Global progress tracking
+// Bit-packed state (3 bits per node, up to 64 nodes)
+typedef struct {
+    uint64_t bits[3];  // 192 bits total, enough for 64 nodes
+} state_t;
+
+// Memoization structures
+typedef struct memo_entry {
+    state_t state;
+    long long result;
+    struct memo_entry* next;
+} memo_entry_t;
+
+typedef struct {
+    memo_entry_t* buckets[MEMO_TABLE_SIZE];
+    long long hits;
+    long long misses;
+    long long stores;
+} memo_table_t;
+
+// Global progress tracking and memoization
 long long recursion_calls = 0;
 int max_depth = 0;
+memo_table_t memo_table;
 
 // Node information structure
 typedef struct {
@@ -24,11 +47,6 @@ typedef struct {
     int req_col;     // -1 if no requirement
     int linear_idx;  // Linear index for bit manipulation
 } node_info_t;
-
-// Bit-packed state (3 bits per node, up to 64 nodes)
-typedef struct {
-    uint64_t bits[3];  // 192 bits total, enough for 64 nodes
-} state_t;
 
 // Global node information
 node_info_t nodes[64];  // More than enough for our trees
@@ -57,6 +75,74 @@ int calculate_tree_total(const state_t* state, int tree_id) {
         }
     }
     return total;
+}
+
+// Hash function for memoization
+uint64_t hash_state(const state_t* state) {
+    uint64_t hash = 0x9e3779b9;  // Golden ratio hash constant
+    
+    // Hash the state bits
+    hash ^= state->bits[0] + (hash << 6) + (hash >> 2);
+    hash ^= state->bits[1] + (hash << 6) + (hash >> 2);
+    hash ^= state->bits[2] + (hash << 6) + (hash >> 2);
+    return hash;
+}
+
+// Compare two states for equality
+bool states_equal(const state_t* state1, const state_t* state2) {
+    return (state1->bits[0] == state2->bits[0] && 
+            state1->bits[1] == state2->bits[1] && 
+            state1->bits[2] == state2->bits[2]);
+}
+
+// Initialize memoization table
+void init_memo_table() {
+    memset(&memo_table, 0, sizeof(memo_table));
+}
+
+// Look up a state in the memoization table
+long long lookup_memo(const state_t* state) {
+    uint64_t hash = hash_state(state);
+    int bucket = hash % MEMO_TABLE_SIZE;
+    
+    memo_entry_t* entry = memo_table.buckets[bucket];
+    while (entry) {
+        if (states_equal(&entry->state, state)) {
+            memo_table.hits++;
+            return entry->result;
+        }
+        entry = entry->next;
+    }
+    
+    memo_table.misses++;
+    return -1;  // Not found
+}
+
+// Store a result in the memoization table
+void store_memo(const state_t* state, long long result) {
+    uint64_t hash = hash_state(state);
+    int bucket = hash % MEMO_TABLE_SIZE;
+    
+    // Create new entry
+    memo_entry_t* new_entry = malloc(sizeof(memo_entry_t));
+    new_entry->state = *state;
+    new_entry->result = result;
+    new_entry->next = memo_table.buckets[bucket];
+    
+    memo_table.buckets[bucket] = new_entry;
+    memo_table.stores++;
+}
+
+// Free memoization table
+void free_memo_table() {
+    for (int i = 0; i < MEMO_TABLE_SIZE; i++) {
+        memo_entry_t* entry = memo_table.buckets[i];
+        while (entry) {
+            memo_entry_t* next = entry->next;
+            free(entry);
+            entry = next;
+        }
+    }
 }
 
 // Helper function to find node index by tree/row/col
@@ -103,18 +189,28 @@ bool is_node_available(const state_t* state, int node_idx) {
 // Main recursive counting function
 long long count_allocations(state_t current_state, int remaining_points) {
     recursion_calls++;
-    int depth = TOTAL_POINTS - remaining_points;
-    if (depth > max_depth) max_depth = depth;
-    
+
     // Progress indicator every million calls
     if (recursion_calls % 1000000 == 0) {
         printf("Progress: %lld million calls, max depth %d, remaining points %d\n", 
                recursion_calls / 1000000, max_depth, remaining_points);
+        printf("  Memo stats - Hits: %lld, Misses: %lld, Stores: %lld, Hit rate: %.2f%%\n",
+               memo_table.hits, memo_table.misses, memo_table.stores,
+               memo_table.hits + memo_table.misses > 0 ? 
+               100.0 * memo_table.hits / (memo_table.hits + memo_table.misses) : 0.0);
     }
     
     // Base case
     if (remaining_points == 0) return 1;
     if (remaining_points < 0) return 0;
+    
+    // Check memoization every MEMO_INTERVAL iterations
+    if ((TOTAL_POINTS - remaining_points) % MEMO_INTERVAL == 0) {
+        long long cached_result = lookup_memo(&current_state);
+        if (cached_result != -1) {
+            return cached_result;
+        }
+    }
     
     long long total_ways = 0;
     
@@ -126,13 +222,18 @@ long long count_allocations(state_t current_state, int remaining_points) {
                              remaining_points : (nodes[i].max_points - current_points);
             
             // Try adding 1 to max_can_add points to this node
-            for (int add = 1; add <= max_can_add; add++) {
+            for (int add = max_can_add; add >= 1; add--) {
                 state_t new_state = current_state;
                 set_node_points(&new_state, i, current_points + add);
                 
                 total_ways += count_allocations(new_state, remaining_points - add);
             }
         }
+    }
+    
+    // Store in memo table every MEMO_INTERVAL iterations
+    if ((TOTAL_POINTS - remaining_points) % MEMO_INTERVAL == 0) {
+        store_memo(&current_state, total_ways);
     }
     
     return total_ways;
@@ -306,6 +407,9 @@ int main(int argc, char* argv[]) {
     recursion_calls = 0;
     max_depth = 0;
     
+    // Initialize memoization table
+    init_memo_table();
+    
     // Allow custom point total from command line
     int points_to_allocate = TOTAL_POINTS;
     if (argc > 1) {
@@ -324,16 +428,42 @@ int main(int argc, char* argv[]) {
     memset(&initial_state, 0, sizeof(initial_state));
     
     printf("Calculating number of ways to allocate %d points...\n", points_to_allocate);
+    printf("Using memoization every %d recursive iterations.\n", MEMO_INTERVAL);
     printf("This may take a while...\n\n");
+    
+    // Start timing
+    clock_t start_time = clock();
+    time_t start_wall_time = time(NULL);
     
     // Count all possible allocations
     long long result = count_allocations(initial_state, points_to_allocate);
+    
+    // End timing
+    clock_t end_time = clock();
+    time_t end_wall_time = time(NULL);
+    
+    double cpu_time = ((double)(end_time - start_time)) / CLOCKS_PER_SEC;
+    double wall_time = difftime(end_wall_time, start_wall_time);
     
     printf("\nResults:\n");
     printf("========\n");
     printf("Total number of valid skill tree allocations: %lld\n", result);
     printf("Total recursive calls made: %lld\n", recursion_calls);
     printf("Maximum recursion depth reached: %d\n", max_depth);
+    printf("\nTiming:\n");
+    printf("CPU time: %.2f seconds\n", cpu_time);
+    printf("Wall time: %.0f seconds (%.2f minutes)\n", wall_time, wall_time / 60.0);
+    printf("Calls per second: %.0f\n", recursion_calls / wall_time);
+    printf("\nMemoization Statistics:\n");
+    printf("Cache hits: %lld\n", memo_table.hits);
+    printf("Cache misses: %lld\n", memo_table.misses);
+    printf("Cache stores: %lld\n", memo_table.stores);
+    printf("Hit rate: %.2f%%\n", 
+           memo_table.hits + memo_table.misses > 0 ? 
+           100.0 * memo_table.hits / (memo_table.hits + memo_table.misses) : 0.0);
+    
+    // Cleanup
+    free_memo_table();
     
     return 0;
 }
