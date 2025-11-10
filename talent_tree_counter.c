@@ -9,15 +9,16 @@
 #define TOTAL_POINTS 51
 #define MAX_NODES_PER_TREE 20
 #define TOTAL_TREES 3
-#define MEMO_INTERVAL 1
+#define MEMO_INTERVAL 1  // Cache every iteration now
 #define MEMO_TABLE_SIZE 10000000  // 10M entries
 
-// Bit-packed state (3 bits per node, up to 64 nodes)
+// Bit-packed state with tree totals (3 bits per node + 8 bits per tree total)
 typedef struct {
-    uint64_t bits[3];  // 192 bits total, enough for 64 nodes
+    uint64_t bits[3];        // 192 bits total, enough for 64 nodes (3 bits each)
+    uint16_t tree_totals[3]; // Arms, Fury, Protection point totals
 } state_t;
 
-// Memoization structures
+// Memoization structures (simplified - no remaining_points needed)
 typedef struct memo_entry {
     state_t state;
     long long result;
@@ -66,18 +67,7 @@ static inline void set_node_points(state_t* state, int node_idx, int points) {
     state->bits[word] |= ((uint64_t)points << bit_pos);  // Set new value
 }
 
-// Helper function to find total points in a tree
-int calculate_tree_total(const state_t* state, int tree_id) {
-    int total = 0;
-    for (int i = 0; i < total_nodes; i++) {
-        if (nodes[i].tree == tree_id) {
-            total += get_node_points(state, i);
-        }
-    }
-    return total;
-}
-
-// Hash function for memoization
+// Hash function for memoization (state only)
 uint64_t hash_state(const state_t* state) {
     uint64_t hash = 0x9e3779b9;  // Golden ratio hash constant
     
@@ -85,14 +75,23 @@ uint64_t hash_state(const state_t* state) {
     hash ^= state->bits[0] + (hash << 6) + (hash >> 2);
     hash ^= state->bits[1] + (hash << 6) + (hash >> 2);
     hash ^= state->bits[2] + (hash << 6) + (hash >> 2);
+    
+    // Hash the tree totals
+    hash ^= ((uint64_t)state->tree_totals[0] << 16 | 
+             (uint64_t)state->tree_totals[1] << 8 | 
+             (uint64_t)state->tree_totals[2]) + (hash << 6) + (hash >> 2);
+    
     return hash;
 }
 
-// Compare two states for equality
+// Compare two states for equality (updated for new state structure)
 bool states_equal(const state_t* state1, const state_t* state2) {
     return (state1->bits[0] == state2->bits[0] && 
             state1->bits[1] == state2->bits[1] && 
-            state1->bits[2] == state2->bits[2]);
+            state1->bits[2] == state2->bits[2] &&
+            state1->tree_totals[0] == state2->tree_totals[0] &&
+            state1->tree_totals[1] == state2->tree_totals[1] &&
+            state1->tree_totals[2] == state2->tree_totals[2]);
 }
 
 // Initialize memoization table
@@ -155,7 +154,7 @@ int find_node_index(int tree, int row, int col) {
     return -1;  // Not found
 }
 
-// Check if a node is available for point allocation
+// Check if a node is available for point allocation (optimized)
 bool is_node_available(const state_t* state, int node_idx) {
     const node_info_t* node = &nodes[node_idx];
     
@@ -165,8 +164,8 @@ bool is_node_available(const state_t* state, int node_idx) {
     }
     
     // Check row requirement (need row_index * 5 points in tree)
-    int tree_total = calculate_tree_total(state, node->tree);
-    if (tree_total < node->row * 5) {
+    // Use pre-calculated tree total instead of recalculating
+    if (state->tree_totals[node->tree] < node->row * 5) {
         return false;
     }
     
@@ -186,10 +185,12 @@ bool is_node_available(const state_t* state, int node_idx) {
     return true;
 }
 
-// Main recursive counting function
+// Main recursive counting function (optimized with simplified memoization)
 long long count_allocations(state_t current_state, int remaining_points) {
     recursion_calls++;
-
+    int depth = TOTAL_POINTS - remaining_points;
+    if (depth > max_depth) max_depth = depth;
+    
     // Progress indicator every million calls
     if (recursion_calls % 1000000 == 0) {
         printf("Progress: %lld million calls, max depth %d, remaining points %d\n", 
@@ -204,12 +205,10 @@ long long count_allocations(state_t current_state, int remaining_points) {
     if (remaining_points == 0) return 1;
     if (remaining_points < 0) return 0;
     
-    // Check memoization every MEMO_INTERVAL iterations
-    if ((TOTAL_POINTS - remaining_points) % MEMO_INTERVAL == 0) {
-        long long cached_result = lookup_memo(&current_state);
-        if (cached_result != -1) {
-            return cached_result;
-        }
+    // Check memoization (state only - remaining_points is implicit)
+    long long cached_result = lookup_memo(&current_state);
+    if (cached_result != -1) {
+        return cached_result;
     }
     
     long long total_ways = 0;
@@ -222,19 +221,20 @@ long long count_allocations(state_t current_state, int remaining_points) {
                              remaining_points : (nodes[i].max_points - current_points);
             
             // Try adding 1 to max_can_add points to this node
-            for (int add = max_can_add; add >= 1; add--) {
+            for (int add = 1; add <= max_can_add; add++) {
                 state_t new_state = current_state;
                 set_node_points(&new_state, i, current_points + add);
+                
+                // Update the tree total for the modified tree
+                new_state.tree_totals[nodes[i].tree] += add;
                 
                 total_ways += count_allocations(new_state, remaining_points - add);
             }
         }
     }
     
-    // Store in memo table every MEMO_INTERVAL iterations
-    if ((TOTAL_POINTS - remaining_points) % MEMO_INTERVAL == 0) {
-        store_memo(&current_state, total_ways);
-    }
+    // Store in memo table
+    store_memo(&current_state, total_ways);
     
     return total_ways;
 }
@@ -423,12 +423,16 @@ int main(int argc, char* argv[]) {
     // Initialize the node data
     initialize_nodes();
     
-    // Create initial empty state
+    // Create initial empty state with zero tree totals
     state_t initial_state;
     memset(&initial_state, 0, sizeof(initial_state));
+    // Tree totals start at 0 for all trees
+    initial_state.tree_totals[0] = 0;  // Arms
+    initial_state.tree_totals[1] = 0;  // Fury  
+    initial_state.tree_totals[2] = 0;  // Protection
     
     printf("Calculating number of ways to allocate %d points...\n", points_to_allocate);
-    printf("Using memoization every %d recursive iterations.\n", MEMO_INTERVAL);
+    printf("Using simplified memoization (state-only keys) with tree total caching.\n");
     printf("This may take a while...\n\n");
     
     // Start timing
