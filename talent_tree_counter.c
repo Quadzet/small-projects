@@ -1,398 +1,486 @@
 #include <stdio.h>
-#include <stdint.h>
-#include <stdbool.h>
-#include <string.h>
 #include <stdlib.h>
-#include <time.h>
+#include <string.h>
+#include <stdbool.h>
 
-// Constants
-#define TOTAL_POINTS 51
-#define MAX_TREE_POINTS 200  // Upper bound for individual tree calculations
-#define TREE_MEMO_TABLE_SIZE 1000000  // 1M entries per tree
+#define MAX_POINTS 51
+#define MAX_TALENTS_PER_ROW 4
+#define MAX_ROWS 7
+#define MAX_TREES 3
 
-// Single tree state (much smaller than full state)
+// Talent structure
 typedef struct {
-    uint64_t bits;  // Only need 1 uint64_t for single tree (3 bits × ~20 nodes = ~60 bits)
-    uint16_t total_points;
-} tree_state_t;
-
-// Memoization for single tree
-typedef struct tree_memo_entry {
-    tree_state_t state;
-    long long result;
-    struct tree_memo_entry* next;
-} tree_memo_entry_t;
-
-typedef struct {
-    tree_memo_entry_t* buckets[TREE_MEMO_TABLE_SIZE];
-    long long hits;
-    long long misses;
-    long long stores;
-} tree_memo_table_t;
-
-// Node information for a single tree
-typedef struct {
-    int row;
-    int col;
     int max_points;
-    int req_row;    // -1 if no requirement
-    int req_col;    // -1 if no requirement
-} tree_node_t;
+    bool has_req;
+    char req_type;  // '/' or '\'
+    int max_above;
+} Talent;
+
+// Row structure
+typedef struct {
+    Talent talents[MAX_TALENTS_PER_ROW];
+    int num_talents;
+} Row;
 
 // Tree structure
 typedef struct {
-    tree_node_t nodes[25];  // Max nodes per tree
-    int node_count;
-    long long* results;     // results[i] = ways to allocate i points to this tree
-    tree_memo_table_t memo; // Memoization for this tree
-} tree_info_t;
+    Row rows[MAX_ROWS];
+    int num_rows;
+} Tree;
 
-// Global tree data
-tree_info_t trees[3];  // Arms, Fury, Protection
-long long call_count = 0;
+// Distribution entry for memoization
+typedef struct {
+    int points;
+    long long count;
+} DistEntry;
 
-// Hash function for single tree state
-uint64_t hash_tree_state(const tree_state_t* state) {
-    uint64_t hash = 0x9e3779b9;  // Golden ratio hash constant
-    hash ^= state->bits + (hash << 6) + (hash >> 2);
-    hash ^= (uint64_t)state->total_points + (hash << 6) + (hash >> 2);
-    return hash;
-}
+// Hash table for memoization
+#define HASH_SIZE 100003
+typedef struct HashNode {
+    int row_idx;
+    int points;
+    int parent_alloc[MAX_TALENTS_PER_ROW];
+    int parent_len;
+    DistEntry* dist;
+    int dist_size;
+    struct HashNode* next;
+} HashNode;
 
-// Compare two tree states for equality
-bool tree_states_equal(const tree_state_t* state1, const tree_state_t* state2) {
-    return (state1->bits == state2->bits && 
-            state1->total_points == state2->total_points);
-}
+HashNode* hash_table[HASH_SIZE];
 
-// Initialize tree memo table
-void init_tree_memo_table(tree_memo_table_t* memo) {
-    memset(memo, 0, sizeof(tree_memo_table_t));
-}
-
-// Look up a tree state in memoization table
-long long lookup_tree_memo(tree_memo_table_t* memo, const tree_state_t* state) {
-    uint64_t hash = hash_tree_state(state);
-    int bucket = hash % TREE_MEMO_TABLE_SIZE;
-    
-    tree_memo_entry_t* entry = memo->buckets[bucket];
-    while (entry) {
-        if (tree_states_equal(&entry->state, state)) {
-            memo->hits++;
-            return entry->result;
-        }
-        entry = entry->next;
+// Hash function
+unsigned int hash_func(int row_idx, int points, int* parent_alloc, int parent_len) {
+    unsigned int hash = row_idx * 1000 + points;
+    for (int i = 0; i < parent_len; i++) {
+        hash = hash * 31 + parent_alloc[i];
     }
-    
-    memo->misses++;
-    return -1;  // Not found
+    return hash % HASH_SIZE;
 }
 
-// Store result in tree memo table
-void store_tree_memo(tree_memo_table_t* memo, const tree_state_t* state, long long result) {
-    uint64_t hash = hash_tree_state(state);
-    int bucket = hash % TREE_MEMO_TABLE_SIZE;
-    
-    // Create new entry
-    tree_memo_entry_t* new_entry = malloc(sizeof(tree_memo_entry_t));
-    new_entry->state = *state;
-    new_entry->result = result;
-    new_entry->next = memo->buckets[bucket];
-    
-    memo->buckets[bucket] = new_entry;
-    memo->stores++;
-}
-
-// Free tree memo table
-void free_tree_memo_table(tree_memo_table_t* memo) {
-    for (int i = 0; i < TREE_MEMO_TABLE_SIZE; i++) {
-        tree_memo_entry_t* entry = memo->buckets[i];
-        while (entry) {
-            tree_memo_entry_t* next = entry->next;
-            free(entry);
-            entry = next;
-        }
+// Check if allocation vectors match
+bool alloc_equal(int* a1, int len1, int* a2, int len2) {
+    if (len1 != len2) return false;
+    for (int i = 0; i < len1; i++) {
+        if (a1[i] != a2[i]) return false;
     }
-}
-
-// Bit manipulation for single tree
-static inline int get_tree_node_points(const tree_state_t* state, int node_idx) {
-    int bit_pos = node_idx * 3;
-    return (state->bits >> bit_pos) & 7;
-}
-
-static inline void set_tree_node_points(tree_state_t* state, int node_idx, int points) {
-    int bit_pos = node_idx * 3;
-    state->bits &= ~(7ULL << bit_pos);  // Clear 3 bits
-    state->bits |= ((uint64_t)points << bit_pos);  // Set new value
-}
-
-// Find node index by row/col in a specific tree
-int find_tree_node_index(tree_info_t* tree, int row, int col) {
-    for (int i = 0; i < tree->node_count; i++) {
-        if (tree->nodes[i].row == row && tree->nodes[i].col == col) {
-            return i;
-        }
-    }
-    return -1;
-}
-
-// Check if a node is available for allocation in a single tree
-bool is_tree_node_available(tree_info_t* tree, const tree_state_t* state, int node_idx) {
-    tree_node_t* node = &tree->nodes[node_idx];
-    
-    // Check if node is already maxed out
-    if (get_tree_node_points(state, node_idx) >= node->max_points) {
-        return false;
-    }
-    
-    // Check row requirement (need row_index * 5 points in tree)
-    if (state->total_points < node->row * 5) {
-        return false;
-    }
-    
-    // Check prerequisite requirement
-    if (node->req_row != -1) {
-        int req_node_idx = find_tree_node_index(tree, node->req_row, node->req_col);
-        if (req_node_idx == -1) {
-            printf("Error: Required node not found!\n");
-            return false;
-        }
-        int req_max = tree->nodes[req_node_idx].max_points;
-        if (get_tree_node_points(state, req_node_idx) < req_max) {
-            return false;
-        }
-    }
-    
     return true;
 }
 
-// Calculate number of ways to allocate points to a single tree (with memoization)
-long long calculate_single_tree(tree_info_t* tree, tree_state_t current_state, int remaining_points) {
-    call_count++;
-    
-    // Base case
-    if (remaining_points == 0) return 1;
-    if (remaining_points < 0) return 0;
-    
-    // Check memoization
-    long long cached_result = lookup_tree_memo(&tree->memo, &current_state);
-    if (cached_result != -1) {
-        return cached_result;
-    }
-    
-    long long total_ways = 0;
-    
-    // Try allocating to each available node
-    for (int i = 0; i < tree->node_count; i++) {
-        if (is_tree_node_available(tree, &current_state, i)) {
-            int current_points = get_tree_node_points(&current_state, i);
-            int max_can_add = (remaining_points < (tree->nodes[i].max_points - current_points)) ? 
-                             remaining_points : (tree->nodes[i].max_points - current_points);
-            
-            // Try adding 1 to max_can_add points to this node
-            for (int add = 1; add <= max_can_add; add++) {
-                tree_state_t new_state = current_state;
-                set_tree_node_points(&new_state, i, current_points + add);
-                new_state.total_points += add;
-                
-                total_ways += calculate_single_tree(tree, new_state, remaining_points - add);
-            }
-        }
-    }
-    
-    // Store in memo table
-    store_tree_memo(&tree->memo, &current_state, total_ways);
-    
-    return total_ways;
-}
-
-// Calculate results for a single tree up to max_points
-void calculate_tree_results(tree_info_t* tree, int max_points, const char* tree_name) {
-    printf("Calculating %s tree for 0-%d points...\n", tree_name, max_points);
-    
-    tree->results = calloc(max_points + 1, sizeof(long long));
-    
-    for (int points = 0; points <= max_points; points++) {
-        // Initialize fresh memoization for each point calculation
-        init_tree_memo_table(&tree->memo);
-        
-        tree_state_t initial_state = {0, 0};
-        call_count = 0;
-        
-        tree->results[points] = calculate_single_tree(tree, initial_state, points);
-        
-        if (points % 5 == 0 || points <= 10) {
-            printf("  %s[%d points] = %lld ways (%lld calls, hits: %lld)\n", 
-                   tree_name, points, tree->results[points], call_count, tree->memo.hits);
-        }
-        
-        // Clean up memo table for this point calculation
-        free_tree_memo_table(&tree->memo);
-    }
-}
-
-// Initialize tree data structures
-void initialize_tree_data() {
+// Initialize trees with talent data
+void init_trees(Tree trees[MAX_TREES]) {
     // Arms tree
-    trees[0].node_count = 0;
+    Tree* arms = &trees[0];
+    arms->num_rows = 7;
+    
     // Row 0
-    trees[0].nodes[trees[0].node_count++] = (tree_node_t){0, 0, 3, -1, -1};
-    trees[0].nodes[trees[0].node_count++] = (tree_node_t){0, 1, 5, -1, -1};
-    trees[0].nodes[trees[0].node_count++] = (tree_node_t){0, 2, 3, -1, -1};
+    arms->rows[0].num_talents = 3;
+    arms->rows[0].talents[0] = (Talent){3, false, 0, 0};
+    arms->rows[0].talents[1] = (Talent){5, false, 0, 0};
+    arms->rows[0].talents[2] = (Talent){3, false, 0, 0};
+    
     // Row 1
-    trees[0].nodes[trees[0].node_count++] = (tree_node_t){1, 0, 2, -1, -1};
-    trees[0].nodes[trees[0].node_count++] = (tree_node_t){1, 1, 5, -1, -1};
-    trees[0].nodes[trees[0].node_count++] = (tree_node_t){1, 2, 3, -1, -1};
+    arms->rows[1].num_talents = 3;
+    arms->rows[1].talents[0] = (Talent){2, false, 0, 0};
+    arms->rows[1].talents[1] = (Talent){5, false, 0, 0};
+    arms->rows[1].talents[2] = (Talent){3, false, 0, 0};
+    
     // Row 2
-    trees[0].nodes[trees[0].node_count++] = (tree_node_t){2, 0, 2, -1, -1};
-    trees[0].nodes[trees[0].node_count++] = (tree_node_t){2, 1, 1, 1, 1};  // req [1,1]
-    trees[0].nodes[trees[0].node_count++] = (tree_node_t){2, 2, 3, 0, 2};  // req [0,2]
+    arms->rows[2].num_talents = 3;
+    arms->rows[2].talents[0] = (Talent){2, false, 0, 0};
+    arms->rows[2].talents[1] = (Talent){1, true, '\\', 1};
+    arms->rows[2].talents[2] = (Talent){3, true, '\\', 3};
+    
     // Row 3
-    trees[0].nodes[trees[0].node_count++] = (tree_node_t){3, 0, 5, -1, -1};
-    trees[0].nodes[trees[0].node_count++] = (tree_node_t){3, 1, 2, 2, 2};  // req [2,2]
+    arms->rows[3].num_talents = 2;
+    arms->rows[3].talents[0] = (Talent){5, false, 0, 0};
+    arms->rows[3].talents[1] = (Talent){2, true, '\\', 2};
+    
     // Row 4
-    trees[0].nodes[trees[0].node_count++] = (tree_node_t){4, 0, 5, -1, -1};
-    trees[0].nodes[trees[0].node_count++] = (tree_node_t){4, 1, 1, -1, -1};
-    trees[0].nodes[trees[0].node_count++] = (tree_node_t){4, 2, 5, -1, -1};
-    trees[0].nodes[trees[0].node_count++] = (tree_node_t){4, 3, 5, -1, -1};
+    arms->rows[4].num_talents = 4;
+    arms->rows[4].talents[0] = (Talent){5, false, 0, 0};
+    arms->rows[4].talents[1] = (Talent){1, false, 0, 0};
+    arms->rows[4].talents[2] = (Talent){5, false, 0, 0};
+    arms->rows[4].talents[3] = (Talent){5, false, 0, 0};
+    
     // Row 5
-    trees[0].nodes[trees[0].node_count++] = (tree_node_t){5, 0, 5, -1, -1};
-    trees[0].nodes[trees[0].node_count++] = (tree_node_t){5, 1, 3, -1, -1};
+    arms->rows[5].num_talents = 2;
+    arms->rows[5].talents[0] = (Talent){5, false, 0, 0};
+    arms->rows[5].talents[1] = (Talent){3, false, 0, 0};
+    
     // Row 6
-    trees[0].nodes[trees[0].node_count++] = (tree_node_t){6, 0, 1, 4, 1};  // req [4,1]
+    arms->rows[6].num_talents = 1;
+    arms->rows[6].talents[0] = (Talent){1, true, '\\', 1};
 
     // Fury tree
-    trees[1].node_count = 0;
+    Tree* fury = &trees[1];
+    fury->num_rows = 7;
+    
     // Row 0
-    trees[1].nodes[trees[1].node_count++] = (tree_node_t){0, 0, 5, -1, -1};
-    trees[1].nodes[trees[1].node_count++] = (tree_node_t){0, 1, 5, -1, -1};
+    fury->rows[0].num_talents = 2;
+    fury->rows[0].talents[0] = (Talent){5, false, 0, 0};
+    fury->rows[0].talents[1] = (Talent){5, false, 0, 0};
+    
     // Row 1
-    trees[1].nodes[trees[1].node_count++] = (tree_node_t){1, 0, 5, -1, -1};
-    trees[1].nodes[trees[1].node_count++] = (tree_node_t){1, 1, 5, -1, -1};
+    fury->rows[1].num_talents = 2;
+    fury->rows[1].talents[0] = (Talent){5, false, 0, 0};
+    fury->rows[1].talents[1] = (Talent){5, false, 0, 0};
+    
     // Row 2
-    trees[1].nodes[trees[1].node_count++] = (tree_node_t){2, 0, 3, -1, -1};
-    trees[1].nodes[trees[1].node_count++] = (tree_node_t){2, 1, 1, -1, -1};
-    trees[1].nodes[trees[1].node_count++] = (tree_node_t){2, 2, 3, -1, -1};
-    trees[1].nodes[trees[1].node_count++] = (tree_node_t){2, 3, 5, -1, -1};
+    fury->rows[2].num_talents = 4;
+    fury->rows[2].talents[0] = (Talent){3, false, 0, 0};
+    fury->rows[2].talents[1] = (Talent){1, false, 0, 0};
+    fury->rows[2].talents[2] = (Talent){3, false, 0, 0};
+    fury->rows[2].talents[3] = (Talent){5, false, 0, 0};
+    
     // Row 3
-    trees[1].nodes[trees[1].node_count++] = (tree_node_t){3, 0, 5, -1, -1};
-    trees[1].nodes[trees[1].node_count++] = (tree_node_t){3, 1, 2, -1, -1};
-    trees[1].nodes[trees[1].node_count++] = (tree_node_t){3, 2, 5, -1, -1};
+    fury->rows[3].num_talents = 3;
+    fury->rows[3].talents[0] = (Talent){5, false, 0, 0};
+    fury->rows[3].talents[1] = (Talent){2, false, 0, 0};
+    fury->rows[3].talents[2] = (Talent){5, false, 0, 0};
+    
     // Row 4
-    trees[1].nodes[trees[1].node_count++] = (tree_node_t){4, 0, 5, -1, -1};
-    trees[1].nodes[trees[1].node_count++] = (tree_node_t){4, 1, 1, -1, -1};
-    trees[1].nodes[trees[1].node_count++] = (tree_node_t){4, 2, 2, -1, -1};
+    fury->rows[4].num_talents = 3;
+    fury->rows[4].talents[0] = (Talent){5, false, 0, 0};
+    fury->rows[4].talents[1] = (Talent){1, false, 0, 0};
+    fury->rows[4].talents[2] = (Talent){2, false, 0, 0};
+    
     // Row 5
-    trees[1].nodes[trees[1].node_count++] = (tree_node_t){5, 0, 2, -1, -1};
-    trees[1].nodes[trees[1].node_count++] = (tree_node_t){5, 1, 5, 3, 2};  // req [3,2]
+    fury->rows[5].num_talents = 2;
+    fury->rows[5].talents[0] = (Talent){2, false, 0, 0};
+    fury->rows[5].talents[1] = (Talent){5, true, '\\', 5};
+    
     // Row 6
-    trees[1].nodes[trees[1].node_count++] = (tree_node_t){6, 0, 1, 4, 1};  // req [4,1]
+    fury->rows[6].num_talents = 1;
+    fury->rows[6].talents[0] = (Talent){1, true, '\\', 1};
 
     // Protection tree
-    trees[2].node_count = 0;
+    Tree* prot = &trees[2];
+    prot->num_rows = 7;
+    
     // Row 0
-    trees[2].nodes[trees[2].node_count++] = (tree_node_t){0, 0, 5, -1, -1};
-    trees[2].nodes[trees[2].node_count++] = (tree_node_t){0, 1, 5, -1, -1};
+    prot->rows[0].num_talents = 2;
+    prot->rows[0].talents[0] = (Talent){5, false, 0, 0};
+    prot->rows[0].talents[1] = (Talent){5, false, 0, 0};
+    
     // Row 1
-    trees[2].nodes[trees[2].node_count++] = (tree_node_t){1, 0, 2, -1, -1};
-    trees[2].nodes[trees[2].node_count++] = (tree_node_t){1, 1, 5, -1, -1};
-    trees[2].nodes[trees[2].node_count++] = (tree_node_t){1, 2, 5, -1, -1};
+    prot->rows[1].num_talents = 3;
+    prot->rows[1].talents[0] = (Talent){2, false, 0, 0};
+    prot->rows[1].talents[1] = (Talent){5, false, 0, 0};
+    prot->rows[1].talents[2] = (Talent){5, false, 0, 0};
+    
     // Row 2
-    trees[2].nodes[trees[2].node_count++] = (tree_node_t){2, 0, 1, 1, 0};  // req [1,0]
-    trees[2].nodes[trees[2].node_count++] = (tree_node_t){2, 1, 3, 0, 0};  // req [0,0]
-    trees[2].nodes[trees[2].node_count++] = (tree_node_t){2, 2, 3, -1, -1};
-    trees[2].nodes[trees[2].node_count++] = (tree_node_t){2, 3, 5, -1, -1};
+    prot->rows[2].num_talents = 4;
+    prot->rows[2].talents[0] = (Talent){1, true, '\\', 1};
+    prot->rows[2].talents[1] = (Talent){3, true, '\\', 3};
+    prot->rows[2].talents[2] = (Talent){3, false, 0, 0};
+    prot->rows[2].talents[3] = (Talent){5, false, 0, 0};
+    
     // Row 3
-    trees[2].nodes[trees[2].node_count++] = (tree_node_t){3, 0, 3, -1, -1};
-    trees[2].nodes[trees[2].node_count++] = (tree_node_t){3, 1, 3, -1, -1};
-    trees[2].nodes[trees[2].node_count++] = (tree_node_t){3, 2, 2, -1, -1};
+    prot->rows[3].num_talents = 3;
+    prot->rows[3].talents[0] = (Talent){3, false, 0, 0};
+    prot->rows[3].talents[1] = (Talent){3, false, 0, 0};
+    prot->rows[3].talents[2] = (Talent){2, false, 0, 0};
+    
     // Row 4
-    trees[2].nodes[trees[2].node_count++] = (tree_node_t){4, 0, 2, -1, -1};
-    trees[2].nodes[trees[2].node_count++] = (tree_node_t){4, 1, 1, -1, -1};
-    trees[2].nodes[trees[2].node_count++] = (tree_node_t){4, 2, 2, -1, -1};
+    prot->rows[4].num_talents = 3;
+    prot->rows[4].talents[0] = (Talent){2, false, 0, 0};
+    prot->rows[4].talents[1] = (Talent){1, false, 0, 0};
+    prot->rows[4].talents[2] = (Talent){2, false, 0, 0};
+    
     // Row 5
-    trees[2].nodes[trees[2].node_count++] = (tree_node_t){5, 0, 5, -1, -1};
+    prot->rows[5].num_talents = 1;
+    prot->rows[5].talents[0] = (Talent){5, false, 0, 0};
+    
     // Row 6
-    trees[2].nodes[trees[2].node_count++] = (tree_node_t){6, 0, 1, 4, 1};  // req [4,1]
-
-    printf("Initialized trees: Arms(%d nodes), Fury(%d nodes), Protection(%d nodes)\n",
-           trees[0].node_count, trees[1].node_count, trees[2].node_count);
+    prot->rows[6].num_talents = 1;
+    prot->rows[6].talents[0] = (Talent){1, true, '\\', 1};
 }
 
-// Calculate total combinations using convolution
-long long calculate_total_combinations(int total_points) {
-    long long total = 0;
+// Check if prerequisite is satisfied
+bool check_prerequisite(Talent* talent, int parent_val) {
+    if (!talent->has_req) return true;
     
-    printf("\nCalculating total combinations for %d points using convolution...\n", total_points);
+    if (talent->req_type == '/') {
+        return parent_val > 0;
+    } else if (talent->req_type == '\\') {
+        return parent_val == talent->max_above;
+    }
+    return false;
+}
+
+// Structure to hold row options
+typedef struct {
+    int points;
+    int allocation[MAX_TALENTS_PER_ROW];
+    int alloc_len;
+} RowOption;
+
+typedef struct {
+    RowOption* options;
+    int count;
+    int capacity;
+} RowOptions;
+
+// Generate all valid allocations for a row
+void row_options(Row* row, int* parent_row, int parent_len, RowOptions* result) {
+    result->count = 0;
+    result->capacity = 1000;
+    result->options = malloc(result->capacity * sizeof(RowOption));
     
-    // Triple nested loop for convolution
-    for (int arms_pts = 0; arms_pts <= total_points; arms_pts++) {
-        for (int fury_pts = 0; fury_pts <= total_points - arms_pts; fury_pts++) {
-            int prot_pts = total_points - arms_pts - fury_pts;
-            
-            if (prot_pts >= 0 && prot_pts <= MAX_TREE_POINTS) {
-                long long combination_ways = trees[0].results[arms_pts] * 
-                                           trees[1].results[fury_pts] * 
-                                           trees[2].results[prot_pts];
-                total += combination_ways;
-                
-                if (combination_ways > 0 && arms_pts + fury_pts + prot_pts <= 10) {
-                    printf("  Arms:%d + Fury:%d + Prot:%d = %lld × %lld × %lld = %lld\n",
-                           arms_pts, fury_pts, prot_pts,
-                           trees[0].results[arms_pts], trees[1].results[fury_pts], 
-                           trees[2].results[prot_pts], combination_ways);
+    int allocation[MAX_TALENTS_PER_ROW];
+    
+    void backtrack(int i, int cur_sum) {
+        if (i == row->num_talents) {
+            if (result->count >= result->capacity) {
+                result->capacity *= 2;
+                result->options = realloc(result->options, result->capacity * sizeof(RowOption));
+            }
+            result->options[result->count].points = cur_sum;
+            result->options[result->count].alloc_len = row->num_talents;
+            memcpy(result->options[result->count].allocation, allocation, row->num_talents * sizeof(int));
+            result->count++;
+            return;
+        }
+        
+        Talent* talent = &row->talents[i];
+        int parent_val = (parent_row && i < parent_len) ? parent_row[i] : 0;
+        
+        for (int r = 0; r <= talent->max_points; r++) {
+            if (r == 0) {
+                allocation[i] = 0;
+                backtrack(i + 1, cur_sum);
+            } else {
+                if (!talent->has_req || (parent_row && i < parent_len && check_prerequisite(talent, parent_val))) {
+                    allocation[i] = r;
+                    backtrack(i + 1, cur_sum + r);
                 }
             }
         }
     }
     
-    return total;
+    backtrack(0, 0);
 }
 
-int main(int argc, char* argv[]) {
-    printf("Skill Tree Convolution Calculator\n");
-    printf("=================================\n");
+// Find cached result in hash table
+HashNode* find_cached(int row_idx, int points, int* parent_alloc, int parent_len) {
+    unsigned int hash = hash_func(row_idx, points, parent_alloc, parent_len);
+    HashNode* node = hash_table[hash];
     
-    int target_points = TOTAL_POINTS;
-    if (argc > 1) {
-        target_points = atoi(argv[1]);
-        if (target_points <= 0 || target_points > 200) {
-            printf("Error: Point total must be between 1 and 200\n");
-            return 1;
+    while (node) {
+        if (node->row_idx == row_idx && node->points == points &&
+            alloc_equal(node->parent_alloc, node->parent_len, parent_alloc, parent_len)) {
+            return node;
+        }
+        node = node->next;
+    }
+    return NULL;
+}
+
+// Cache result in hash table
+void cache_result(int row_idx, int points, int* parent_alloc, int parent_len, DistEntry* dist, int dist_size) {
+    unsigned int hash = hash_func(row_idx, points, parent_alloc, parent_len);
+    HashNode* node = malloc(sizeof(HashNode));
+    
+    node->row_idx = row_idx;
+    node->points = points;
+    node->parent_len = parent_len;
+    memcpy(node->parent_alloc, parent_alloc, parent_len * sizeof(int));
+    node->dist_size = dist_size;
+    node->dist = malloc(dist_size * sizeof(DistEntry));
+    memcpy(node->dist, dist, dist_size * sizeof(DistEntry));
+    
+    node->next = hash_table[hash];
+    hash_table[hash] = node;
+}
+
+// Merge two distributions
+void merge_distributions(DistEntry* dist1, int size1, DistEntry* dist2, int size2, DistEntry** result, int* result_size) {
+    // Simple approach: combine and deduplicate
+    DistEntry* temp = malloc((size1 + size2) * sizeof(DistEntry));
+    int temp_size = 0;
+    
+    // Copy first distribution
+    for (int i = 0; i < size1; i++) {
+        temp[temp_size++] = dist1[i];
+    }
+    
+    // Add second distribution, combining duplicates
+    for (int i = 0; i < size2; i++) {
+        bool found = false;
+        for (int j = 0; j < temp_size; j++) {
+            if (temp[j].points == dist2[i].points) {
+                temp[j].count += dist2[i].count;
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            temp[temp_size++] = dist2[i];
         }
     }
     
-    clock_t start_time = clock();
-    time_t start_wall_time = time(NULL);
+    *result = temp;
+    *result_size = temp_size;
+}
+
+// Global variables for the DP function to communicate results
+static DistEntry global_temp_result[MAX_POINTS + 1];
+static int global_temp_size;
+
+// Calculate distribution for a tree using dynamic programming
+void tree_distribution(Tree* tree, DistEntry** result, int* result_size) {
+    // Clear hash table
+    memset(hash_table, 0, sizeof(hash_table));
     
-    // Initialize tree data
-    initialize_tree_data();
+    DistEntry* dp(int row_idx, int pts, int* parent_alloc, int parent_len) {
+        // Check cache
+        HashNode* cached = find_cached(row_idx, pts, parent_alloc, parent_len);
+        if (cached) {
+            memcpy(global_temp_result, cached->dist, cached->dist_size * sizeof(DistEntry));
+            global_temp_size = cached->dist_size;
+            return global_temp_result;
+        }
+        
+        if (row_idx == tree->num_rows) {
+            global_temp_result[0] = (DistEntry){pts, 1};
+            global_temp_size = 1;
+            cache_result(row_idx, pts, parent_alloc, parent_len, global_temp_result, global_temp_size);
+            return global_temp_result;
+        }
+        
+        bool unlocked = (pts >= 5 * row_idx);
+        global_temp_size = 0;
+        
+        if (unlocked) {
+            RowOptions options;
+            row_options(&tree->rows[row_idx], parent_alloc, parent_len, &options);
+            
+            for (int i = 0; i < options.count; i++) {
+                int new_pts = pts + options.options[i].points;
+                if (new_pts > MAX_POINTS) continue;
+                
+                DistEntry* sub_dist = dp(row_idx + 1, new_pts, 
+                                       options.options[i].allocation, 
+                                       options.options[i].alloc_len);
+                
+                // Merge subdistribution into current result
+                DistEntry* merged;
+                int merged_size;
+                merge_distributions(global_temp_result, global_temp_size, sub_dist, 1, &merged, &merged_size);
+                
+                // Copy merged result back to global buffer
+                memcpy(global_temp_result, merged, merged_size * sizeof(DistEntry));
+                global_temp_size = merged_size;
+                free(merged);
+            }
+            
+            free(options.options);
+        } else {
+            // Cannot spend in this row yet
+            int no_alloc[1] = {-1};  // Special marker for no allocation
+            DistEntry* sub_dist = dp(row_idx + 1, pts, no_alloc, 1);
+            memcpy(global_temp_result, sub_dist, sizeof(DistEntry));
+            global_temp_size = 1;
+        }
+        
+        cache_result(row_idx, pts, parent_alloc, parent_len, global_temp_result, global_temp_size);
+        return global_temp_result;
+    }
     
-    // Calculate each tree independently up to target_points
-    calculate_tree_results(&trees[0], target_points, "Arms");
-    calculate_tree_results(&trees[1], target_points, "Fury");
-    calculate_tree_results(&trees[2], target_points, "Protection");
+    int no_parent[1] = {-1};
+    DistEntry* dist = dp(0, 0, no_parent, 1);
     
-    // Combine results using convolution
-    long long result = calculate_total_combinations(target_points);
+    *result = malloc(global_temp_size * sizeof(DistEntry));
+    memcpy(*result, dist, global_temp_size * sizeof(DistEntry));
+    *result_size = global_temp_size;
+}
+
+// Convolve two distributions
+void convolve_counts(DistEntry* a, int size_a, DistEntry* b, int size_b, DistEntry** result, int* result_size) {
+    DistEntry* temp = malloc(size_a * size_b * sizeof(DistEntry));
+    int temp_size = 0;
     
-    clock_t end_time = clock();
-    time_t end_wall_time = time(NULL);
+    for (int i = 0; i < size_a; i++) {
+        for (int j = 0; j < size_b; j++) {
+            int k = a[i].points + b[j].points;
+            if (k <= MAX_POINTS) {
+                // Check if this point total already exists
+                bool found = false;
+                for (int l = 0; l < temp_size; l++) {
+                    if (temp[l].points == k) {
+                        temp[l].count += a[i].count * b[j].count;
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    temp[temp_size] = (DistEntry){k, a[i].count * b[j].count};
+                    temp_size++;
+                }
+            }
+        }
+    }
     
-    double cpu_time = ((double)(end_time - start_time)) / CLOCKS_PER_SEC;
-    double wall_time = difftime(end_wall_time, start_wall_time);
+    *result = temp;
+    *result_size = temp_size;
+}
+
+// Free hash table
+void cleanup_hash_table() {
+    for (int i = 0; i < HASH_SIZE; i++) {
+        HashNode* node = hash_table[i];
+        while (node) {
+            HashNode* next = node->next;
+            free(node->dist);
+            free(node);
+            node = next;
+        }
+    }
+}
+
+int main() {
+    Tree trees[MAX_TREES];
+    init_trees(trees);
     
-    printf("\nFinal Results:\n");
-    printf("==============\n");
-    printf("Total combinations for %d points: %lld\n", target_points, result);
-    printf("CPU time: %.2f seconds\n", cpu_time);
-    printf("Wall time: %.0f seconds\n", wall_time);
+    DistEntry* arms_dist;
+    DistEntry* fury_dist;
+    DistEntry* prot_dist;
+    int arms_size, fury_size, prot_size;
+    
+    printf("Calculating Arms distribution...\n");
+    tree_distribution(&trees[0], &arms_dist, &arms_size);
+    
+    printf("Calculating Fury distribution...\n");
+    tree_distribution(&trees[1], &fury_dist, &fury_size);
+    
+    printf("Calculating Protection distribution...\n");
+    tree_distribution(&trees[2], &prot_dist, &prot_size);
+    
+    printf("Convolving Arms and Fury...\n");
+    DistEntry* af_dist;
+    int af_size;
+    convolve_counts(arms_dist, arms_size, fury_dist, fury_size, &af_dist, &af_size);
+    
+    printf("Computing final result...\n");
+    long long total = 0;
+    for (int i = 0; i < prot_size; i++) {
+        int need = MAX_POINTS - prot_dist[i].points;
+        for (int j = 0; j < af_size; j++) {
+            if (af_dist[j].points == need) {
+                total += (long long)af_dist[j].count * prot_dist[i].count;
+                break;
+            }
+        }
+    }
+    
+    printf("Total valid combinations spending exactly %d points: %lld\n", MAX_POINTS, total);
     
     // Cleanup
-    for (int i = 0; i < 3; i++) {
-        if (trees[i].results) free(trees[i].results);
-    }
+    free(arms_dist);
+    free(fury_dist);
+    free(prot_dist);
+    free(af_dist);
+    cleanup_hash_table();
     
     return 0;
 }
