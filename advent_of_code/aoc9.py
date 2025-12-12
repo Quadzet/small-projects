@@ -13,15 +13,12 @@ def is_valid(p1, p2, red_tiles, connections):
 
     if call >= log_interval:
         print(f"Calc number {call}.")
-        log_interval *= log_interval
+        log_interval += log_interval//10
 
     left = min(x1, x2)
     right = max(x1, x2)
     bot = min(y1, y2)
     top = max(y1, y2)
-
-    x_max = max([x for x, _ in red_tiles])
-    y_max = max([y for _, y in red_tiles])
 
     # ..............
     # .......#XXX#..
@@ -46,28 +43,29 @@ def is_valid(p1, p2, red_tiles, connections):
                     lines_enc += 1
     """
 
-    lines_enc = len([1 for t1, t2 in connections for x in range(left+1, right) for y in range(0, bot+1)
-    if (x, bot) not in red_tiles and min(t1[0], t2[0]) <= x <= max(t1[0], t2[0]) and t1[1] == y == t2[1]])
+    # TODO handle vertical lines when looking horizantally etc.........
 
-    if lines_enc % 2 != 1:
+    lines = [(t1, t2) for t1, t2 in connections if t1[1] == t2[1] <= bot and not ((t1[0] > right and t2[0] > right) or (t1[0] < left and t2[0] < left))]
+
+    for x in range(left+1, right):
+        lines_enc = len([1 for t1, t2 in lines 
+            if (x, bot) not in red_tiles and min(t1[0], t2[0]) <= x <= max(t1[0], t2[0])])
+
+        if lines_enc % 2 != 1:
+            return False
+    if len([(t1, t2) for t1, t2 in connections if left < t1[1] == t2[1] < right and not ((t1[0] > right and t2[0] > right) or (t1[0] < left and t2[0] < left))]) > 0:
         return False
 
-    lines_enc = len([1 for t1, t2 in connections for x in range(left+1, right) for y in range(bot+1, top)
-    if (x, top) not in red_tiles and min(t1[0], t2[0]) <= x <= max(t1[0], t2[0]) and t1[1] == y == t2[1]])
 
-    if lines_enc % 2 != 0:
-        return False
+    lines = [(t1, t2) for t1, t2 in connections if t1[0] == t2[0] <= left and not ((t1[1] > top and t2[1] > top) or (t1[1] < bot and t2[1] < bot))]
 
-    lines_enc = len([1 for t1, t2 in connections for y in range(bot+1, top) for x in range(0, left+1)
-    if (left, y) not in red_tiles and min(t1[1], t2[1]) <= y <= max(t1[1], t2[1]) and t1[0] == x == t2[0]])
+    for y in range(bot+1, top):
+        lines_enc = len([1 for t1, t2 in lines 
+            if (left, y) not in red_tiles and min(t1[1], t2[1]) <= y <= max(t1[1], t2[1])])
 
-    if lines_enc % 2 != 1:
-        return False
-
-    lines_enc = len([1 for t1, t2 in connections for y in range(bot+1, top) for x in range(left+1, right)
-    if (right, y) not in red_tiles and min(t1[1], t2[1]) <= y <= max(t1[1], t2[1]) and t1[0] == x == t2[0]])
-
-    if lines_enc % 2 != 0:
+        if lines_enc % 2 != 1:
+            return False
+    if len([(t1, t2) for t1, t2 in connections if bot < t1[1] == t2[1] < top and not ((t1[0] > right and t2[0] > right) or (t1[0] < left and t2[0] < left))]) > 0:
         return False
 
     return True
