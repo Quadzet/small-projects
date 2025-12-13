@@ -48,8 +48,9 @@ def is_valid(p1, p2, red_tiles, connections):
     lines = [(t1, t2) for t1, t2 in connections if t1[1] == t2[1] <= bot and not ((t1[0] > right and t2[0] > right) or (t1[0] < left and t2[0] < left))]
 
     for x in range(left+1, right):
-        lines_enc = len([1 for t1, t2 in lines 
-            if (x, bot) not in red_tiles and min(t1[0], t2[0]) <= x <= max(t1[0], t2[0])])
+        if (x, bot) in red_tiles:
+            continue
+        lines_enc = len([1 for t1, t2 in lines if min(t1[0], t2[0]) <= x <= max(t1[0], t2[0])])
 
         if lines_enc % 2 != 1:
             return False
