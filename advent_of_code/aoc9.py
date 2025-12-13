@@ -4,6 +4,20 @@ import numpy as np
 log_interval = 1
 call = 0
 
+def rect_intersects_connection(left, right, top, bot, t1, t2):
+    x1, y1 = t1
+    x2, y2 = t2
+
+    if x1 == x2: # vertical
+        if (min(y1, y2) < top < max(y1, y2) and left < x1 < right) \
+            or (min(y1, y2) < bot < max(y1, y2) and left < x1 < right):
+            return True
+    elif y1 == y2: # horizontal
+        if (min(x1, x2) < right < max(x1, x2) and bot < y1 < top) \
+            or (min(x1, x2) < left < max(x1, x2) and bot < y1 < top):
+            return True
+    return False
+
 def is_valid(p1, p2, red_tiles, connections):
     x1, y1 = p1
     x2, y2 = p2
@@ -13,42 +27,52 @@ def is_valid(p1, p2, red_tiles, connections):
     bot = min(y1, y2)
     top = max(y1, y2)
 
-    # ..............
-    # .......#XXX#..
-    # .......XXXXX..
-    # ..OOOOOOOOXX..
-    # ..OOOOOOOOXX..
-    # ..OOOOOOOOXX..
-    # .........XXX..
-    # .........#X#..
-    # ..............
-    # Can be combined/optimized ofc
-    # (9, 5), (2, 3)
+    for t1, t2 in connections:
+        if rect_intersects_connection(left, right, top, bot, t1, t2):
+            return False
 
     red_tiles_set = set(red_tiles)
 
-    lines = [(t1, t2) for t1, t2 in connections if t1[1] <= bot and t2[1] <= bot and not ((t1[0] > right and t2[0] > right) or (t1[0] < left and t2[0] < left))]
+    horizontal_lines = [ ]
+    vertical_lines = [ ]
+
+    for t1, t2 in connections:
+        if t1[1] == t2[1]: # horizontal
+            y = t1[1]
+            if max(t1[0], t2[0]) < left and bot < y < top:
+                vertical_lines.append((t1, t2))
+            if y <= bot and not ((t1[0] > right and t2[0] > right) or (t1[0] < left and t2[0] < left)):
+                horizontal_lines.append((t1, t2))
+            elif bot < y < top and not ((t1[0] >= right and t2[0] >= right) or (t1[0] <= left and t2[0] <= left)):
+                return False
+        elif t1[0] == t2[0]: # vertical
+            x = t1[0]
+            if max(t1[1], t2[1]) < bot and left < x < right:
+                horizontal_lines.append((t1, t2))
+            if x <= left and not ((t1[1] > top and t2[1] > top) or (t1[1] < bot and t2[1] < bot)):
+                vertical_lines.append((t1, t2))
+            elif left < x < right and not ((t1[1] >= top and t2[1] >= top) or (t1[1] <= bot and t2[1] <= bot)):
+                return False
 
     x_to_check = [x for x in range(left+1, right) if (x, bot) not in red_tiles_set]
-    lines_enc = len([1 for t1, t2 in lines for x in x_to_check if min(t1[0], t2[0]) <= x <= max(t1[0], t2[0])])
-
-    if lines_enc % 2 != 1:
-        return False
-    if len([(t1, t2) for t1, t2 in connections if bot < t1[1] == t2[1] < top and not ((t1[0] >= right and t2[0] >= right) or (t1[0] <= left and t2[0] <= left))]) > 0:
-        return False
-
-
-    lines = [(t1, t2) for t1, t2 in connections if t1[0] <= left and t2[0] <= left and not ((t1[1] > top and t2[1] > top) or (t1[1] < bot and t2[1] < bot))]
-
     y_to_check = [y for y in range(bot+1, top) if (left, y) not in red_tiles_set]
-    lines_enc = len([1 for t1, t2 in lines for y in y_to_check if min(t1[1], t2[1]) <= y <= max(t1[1], t2[1])])
 
-    if lines_enc % 2 != 1:
+    lines_enc = 0
+    for x in x_to_check:
+        for t1, t2 in horizontal_lines:
+            if min(t1[0], t2[0]) <= x <= max(t1[0], t2[0]):
+                lines_enc += 1
+
+    if lines_enc % 2 == 1:
         return False
 
-    matches = [(t1, t2) for t1, t2 in connections if left < t1[0] == t2[0] < right and not ((t1[1] >= top and t2[1] >= top) or (t1[1] <= bot and t2[1] <= bot))]
-    if len(matches) > 0:
-        print(matches)
+    lines_enc = 0
+    for y in y_to_check:
+        for t1, t2 in vertical_lines:
+            if min(t1[1], t2[1]) <= y <= max(t1[1], t2[1]):
+                lines_enc += 1
+
+    if lines_enc % 2 == 1:
         return False
 
     print("OK")
