@@ -28,27 +28,23 @@ def is_valid(p1, p2, red_tiles, connections):
 
     red_tiles_set = set(red_tiles)
 
-    horizontal_lines = []
-    vertical_lines = []
+    lines_below_rect = []
+    lines_left_of_rect = []
 
     for t1, t2 in connections:
         if t1[1] == t2[1]:  # horizontal
             y = t1[1]
-            if max(t1[0], t2[0]) < left and bot < y < top:
-                vertical_lines.append((t1, t2))
-            if y <= bot and not (t1[0] > right and t2[0] > right) \
-                    and not (t1[0] < left and t2[0] < left):
-                horizontal_lines.append((t1, t2))
+            if y <= bot and not (min(t1[0], t2[0]) > right) \
+                    and not (max(t1[0], t2[0]) < left):
+                lines_below_rect.append((t1, t2))
             elif bot < y < top and not (t1[0] >= right and t2[0] >= right) \
                     and not (t1[0] <= left and t2[0] <= left):
                 return False
         elif t1[0] == t2[0]:  # vertical
             x = t1[0]
-            if max(t1[1], t2[1]) < bot and left < x < right:
-                horizontal_lines.append((t1, t2))
-            if x <= left and not (t1[1] > top and t2[1] > top) \
-                    and not (t1[1] < bot and t2[1] < bot):
-                vertical_lines.append((t1, t2))
+            if x <= left and not (min(t1[1], t2[1]) > top) \
+                    and not (max(t1[1], t2[1]) < bot):
+                lines_left_of_rect.append((t1, t2))
             elif left < x < right and not (t1[1] >= top and t2[1] >= top) \
                     and not (t1[1] <= bot and t2[1] <= bot):
                 return False
@@ -58,23 +54,23 @@ def is_valid(p1, p2, red_tiles, connections):
     y_to_check = [y for y in range(bot + 1, top)
                   if (left, y) not in red_tiles_set]
 
-    lines_enc = 0
     for x in x_to_check:
-        for t1, t2 in horizontal_lines:
-            if min(t1[0], t2[0]) <= x <= max(t1[0], t2[0]):
+        lines_enc = 0
+        for t1, t2 in lines_below_rect:
+            if min(t1[0], t2[0]) < x <= max(t1[0], t2[0]):
                 lines_enc += 1
 
-    if lines_enc % 2 == 1:
-        return False
+        if lines_enc % 2 == 0:
+            return False
 
-    lines_enc = 0
     for y in y_to_check:
-        for t1, t2 in vertical_lines:
-            if min(t1[1], t2[1]) <= y <= max(t1[1], t2[1]):
+        lines_enc = 0
+        for t1, t2 in lines_left_of_rect:
+            if min(t1[1], t2[1]) < y <= max(t1[1], t2[1]):
                 lines_enc += 1
 
-    if lines_enc % 2 == 1:
-        return False
+        if lines_enc % 2 == 0:
+            return False
 
     print("OK")
     return True
