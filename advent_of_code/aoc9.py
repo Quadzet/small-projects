@@ -1,63 +1,64 @@
-def rect_intersects_connection(left, right, top, bot, t1, t2):
-    x1, y1 = t1
-    x2, y2 = t2
+from collections import namedtuple
+import time
 
-    if x1 == x2:  # vertical
-        if (min(y1, y2) < top < max(y1, y2) and left < x1 < right) \
-                or (min(y1, y2) < bot < max(y1, y2) and left < x1 < right):
+point = namedtuple('point', ['x', 'y'])
+rectangle = namedtuple('rectangle', ['left', 'right', 'top', 'bottom'])
+
+
+def line_intersects_rect(t0, t1, rect):
+    x0, y0 = t0
+    x1, y1 = t1
+
+    if x0 == x1:  # vertical line
+        if (min(y0, y1) < rect.top < max(y0, y1) \
+                or min(y0, y1) < rect.bottom < max(y0, y1) \
+                or rect.bottom <= min(y0, y1) < max(y0, y1) <= rect.top) \
+                and rect.left < x0 < rect.right:
             return True
-    elif y1 == y2:  # horizontal
-        if (min(x1, x2) < right < max(x1, x2) and bot < y1 < top) \
-                or (min(x1, x2) < left < max(x1, x2) and bot < y1 < top):
+    elif y0 == y1:  # horizontal line
+        if (min(x0, x1) < rect.right < max(x0, x1) \
+                or min(x0, x1) < rect.left < max(x0, x1) \
+                or rect.left <= min(x0, x1) < max(x0, x1) <= rect.right) \
+                and rect.bottom < y0 < rect.top:
             return True
     return False
 
 
-def is_valid(p1, p2, red_tiles, connections):
-    x1, y1 = p1
-    x2, y2 = p2
+def hori_line_below_rect(t0, t1, rect):
+    if t0.y == t1.y:  # horizontal line
+        if t0.y <= rect.bottom \
+                and not (min(t0.x, t1.x) > rect.right) \
+                and not (max(t0.x, t1.x) < rect.left):
+            return True
 
-    left = min(x1, x2)
-    right = max(x1, x2)
-    bot = min(y1, y2)
-    top = max(y1, y2)
 
-    for t1, t2 in connections:
-        if rect_intersects_connection(left, right, top, bot, t1, t2):
-            return False
+def vert_line_left_of_rect(t0, t1, rect):
+    if t0.x == t1.x:  # vertical line
+        if t0.x <= rect.left \
+                and not (min(t0.y, t1.y) > rect.top) \
+                and not (max(t0.y, t1.y) < rect.bottom):
+            return True
 
-    red_tiles_set = set(red_tiles)
 
-    lines_below_rect = []
-    lines_left_of_rect = []
+# Use raycasting to determine if all points on the rectangle
+# edge are inside the polygon. Rays should pass through an
+# odd number of lines when it reaches the rectangle edge.
+def rect_edges_are_inside_polygon(
+        rect,
+        red_tiles_set,
+        lines_below_rect,
+        lines_left_of_rect):
 
-    for t1, t2 in connections:
-        if t1[1] == t2[1]:  # horizontal
-            y = t1[1]
-            if y <= bot and not (min(t1[0], t2[0]) > right) \
-                    and not (max(t1[0], t2[0]) < left):
-                lines_below_rect.append((t1, t2))
-            elif bot < y < top and not (t1[0] >= right and t2[0] >= right) \
-                    and not (t1[0] <= left and t2[0] <= left):
-                return False
-        elif t1[0] == t2[0]:  # vertical
-            x = t1[0]
-            if x <= left and not (min(t1[1], t2[1]) > top) \
-                    and not (max(t1[1], t2[1]) < bot):
-                lines_left_of_rect.append((t1, t2))
-            elif left < x < right and not (t1[1] >= top and t2[1] >= top) \
-                    and not (t1[1] <= bot and t2[1] <= bot):
-                return False
-
-    x_to_check = [x for x in range(left + 1, right)
-                  if (x, bot) not in red_tiles_set]
-    y_to_check = [y for y in range(bot + 1, top)
-                  if (left, y) not in red_tiles_set]
+    # No need to check red tiles...
+    x_to_check = [x for x in range(rect.left + 1, rect.right)
+                          if (x, rect.bottom) not in red_tiles_set]
+    y_to_check = [y for y in range(rect.bottom + 1, rect.top)
+                          if (rect.left, y) not in red_tiles_set]
 
     for x in x_to_check:
         lines_enc = 0
-        for t1, t2 in lines_below_rect:
-            if min(t1[0], t2[0]) < x <= max(t1[0], t2[0]):
+        for t0, t1 in lines_below_rect:
+            if min(t0.x, t1.x) < x <= max(t0.x, t1.x):
                 lines_enc += 1
 
         if lines_enc % 2 == 0:
@@ -67,42 +68,75 @@ def is_valid(p1, p2, red_tiles, connections):
         lines_enc = 0
         for t1, t2 in lines_left_of_rect:
             if min(t1[1], t2[1]) < y <= max(t1[1], t2[1]):
-                lines_enc += 1
+                    lines_enc += 1
 
         if lines_enc % 2 == 0:
             return False
-
-    print("OK")
     return True
 
 
+def is_valid(p0, p1, red_tiles, connections):
+    x0, y0 = p0
+    x1, y1 = p1
+    rect = rectangle(min(x0, x1), max(x0, x1), max(y0, y1), min(y0, y1))
+
+    red_tiles_set = set(red_tiles)
+    lines_below_rect = []
+    lines_left_of_rect = []
+
+    for t0, t1 in connections:
+        if line_intersects_rect(t0, t1, rect):
+            return False
+        elif hori_line_below_rect(t0, t1, rect):
+            lines_below_rect.append((t0, t1))
+        elif vert_line_left_of_rect(t0, t1, rect):
+            lines_left_of_rect.append((t0, t1))
+
+    if rect_edges_are_inside_polygon(
+            rect,
+            red_tiles_set,
+            lines_below_rect,
+            lines_left_of_rect):
+        return True
+    return False
+
 def aoc9p2():
+    start_time = time.process_time()
     red_tiles = []
     with open("aoc9_data", "r") as f:
-        r = 0
-        while line := f.readline().strip():
-            x, y = line.split(',')
+        while l := f.readline().strip():
+            x, y = l.split(',')
             red_tiles.append((int(x), int(y)))
-            r += 1
-    connections = list(zip(red_tiles[:-1], red_tiles[1:]))
-    connections.append((red_tiles[-1], red_tiles[0]))
+
+    connections = [(point(*t0), point(*t1)) for t0, t1 in zip(red_tiles[:-1], red_tiles[1:])]
+    connections.append((point(*red_tiles[-1]), point(*red_tiles[0])))
 
     min_dist = min([abs(x1 - x2 + y1 - y2)
                     for (x1, y1), (x2, y2) in connections])
-    print(f"Minimum distance: {min_dist}.")
+    if min_dist == 1:
+        print(f"Two red tiles are next to eachother, "
+               "this algorithm is not guaranteed to work.")
+    else:
+        print(f"Minimum distance between red tiles is "
+              f"{min_dist} > 1. Algorithm works.")
 
+    # [(corner1, corner2, area)...]
     rt_matrix = [[(a, b, (abs(a[0] - b[0]) + 1) * (abs(a[1] - b[1]) + 1))
                   for a in red_tiles] for b in red_tiles]
-    rt_matrix = sorted([item for line in rt_matrix for item in line],
+    rt_matrix = sorted([item for l in rt_matrix for item in l],
                        key=lambda x: x[2])
 
     i = 1
+    interval = 1
     while rt_matrix:
-        rect = rt_matrix.pop()
-        print(f"#{i}\tChecking rect {rect[0]}, {rect[1]}. Area: {rect[2]}.")
-        if is_valid(rect[0], rect[1], red_tiles, connections):
-            print(f"Max: {rect[2]}")
+        t0, t1, area = rt_matrix.pop()
+        if i % interval == 0:
+            print(f"#{i}\tChecking rect {t0}, {t1}. Area: {area}.")
+        if is_valid(t0, t1, red_tiles, connections):
+            print(f"Max: {area}, red tiles: {t0}, {t1}. (Calculated in {time.process_time() - start_time}s.)")
             return
+        if i % (interval * 10) == 0:
+            interval *= 10
         i += 1
     print("No valid rectangles found.")
 
@@ -110,13 +144,13 @@ def aoc9p2():
 def aoc9p1():
     red_tiles = []
     with open("aoc9_data", "r") as f:
-        while line := f.readline().strip():
-            x, y = line.split(',')
+        while l := f.readline().strip():
+            x, y = l.split(',')
             red_tiles.append((int(x), int(y)))
     print(red_tiles)
     rt_matrix = [[(a, b, (abs(a[0] - b[0]) + 1) * (abs(a[1] - b[1]) + 1))
                   for a in red_tiles] for b in red_tiles]
-    max_area = max([i[2] for line in rt_matrix for i in line])
+    max_area = max([i[2] for l in rt_matrix for i in l])
     print(f"Max: {max_area}")
 
 
