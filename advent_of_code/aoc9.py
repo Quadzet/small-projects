@@ -30,6 +30,7 @@ def hori_line_below_rect(t0, t1, rect):
                 and not (min(t0.x, t1.x) > rect.right) \
                 and not (max(t0.x, t1.x) < rect.left):
             return True
+    return False
 
 
 def vert_line_left_of_rect(t0, t1, rect):
@@ -38,6 +39,7 @@ def vert_line_left_of_rect(t0, t1, rect):
                 and not (min(t0.y, t1.y) > rect.top) \
                 and not (max(t0.y, t1.y) < rect.bottom):
             return True
+    return False
 
 
 # Use raycasting to determine if all points on the rectangle
@@ -55,32 +57,30 @@ def rect_edges_are_inside_polygon(
     y_to_check = [y for y in range(rect.bottom + 1, rect.top)
                           if (rect.left, y) not in red_tiles_set]
 
-    for x in x_to_check:
-        lines_enc = 0
-        for t0, t1 in lines_below_rect:
-            if min(t0.x, t1.x) < x <= max(t0.x, t1.x):
-                lines_enc += 1
-
-        if lines_enc % 2 == 0:
+    for x in range(rect.left + 1, rect.right):
+        if (x, rect.bottom) in red_tiles_set:
+            continue
+        n_lines = sum(1 for t0, t1 in lines_below_rect \
+                      if min(t0.x, t1.x) < x <= max(t0.x, t1.x))
+        if n_lines % 2 == 0:
             return False
 
-    for y in y_to_check:
-        lines_enc = 0
-        for t1, t2 in lines_left_of_rect:
-            if min(t1[1], t2[1]) < y <= max(t1[1], t2[1]):
-                    lines_enc += 1
+    for y in range(rect.bottom + 1, rect.top):
+        if (rect.left, y) in red_tiles_set:
+            continue
+        n_lines = sum(1 for t0, t1 in lines_left_of_rect \
+                      if min(t0[1], t1[1]) < y <= max(t0[1], t1[1]))
 
-        if lines_enc % 2 == 0:
+        if n_lines % 2 == 0:
             return False
     return True
 
 
-def is_valid(p0, p1, red_tiles, connections):
+def is_valid(p0, p1, red_tiles_set, connections):
     x0, y0 = p0
     x1, y1 = p1
     rect = rectangle(min(x0, x1), max(x0, x1), max(y0, y1), min(y0, y1))
 
-    red_tiles_set = set(red_tiles)
     lines_below_rect = []
     lines_left_of_rect = []
 
@@ -110,6 +110,7 @@ def aoc9p2():
 
     connections = [(point(*t0), point(*t1)) for t0, t1 in zip(red_tiles[:-1], red_tiles[1:])]
     connections.append((point(*red_tiles[-1]), point(*red_tiles[0])))
+    red_tiles_set = set(red_tiles)
 
     min_dist = min([abs(x1 - x2 + y1 - y2)
                     for (x1, y1), (x2, y2) in connections])
@@ -132,7 +133,7 @@ def aoc9p2():
         t0, t1, area = rt_matrix.pop()
         if i % interval == 0:
             print(f"#{i}\tChecking rect {t0}, {t1}. Area: {area}.")
-        if is_valid(t0, t1, red_tiles, connections):
+        if is_valid(t0, t1, red_tiles_set, connections):
             print(f"Max: {area}, red tiles: {t0}, {t1}. (Calculated in {time.process_time() - start_time}s.)")
             return
         if i % (interval * 10) == 0:
