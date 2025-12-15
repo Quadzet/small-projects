@@ -51,12 +51,6 @@ def rect_edges_are_inside_polygon(
         lines_below_rect,
         lines_left_of_rect):
 
-    # No need to check red tiles...
-    x_to_check = [x for x in range(rect.left + 1, rect.right)
-                          if (x, rect.bottom) not in red_tiles_set]
-    y_to_check = [y for y in range(rect.bottom + 1, rect.top)
-                          if (rect.left, y) not in red_tiles_set]
-
     for x in range(rect.left + 1, rect.right):
         if (x, rect.bottom) in red_tiles_set:
             continue
