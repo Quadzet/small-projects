@@ -24,7 +24,8 @@ typedef struct {
     int tree_id;
     int points_left;
     int current_row;
-    int prereq_state[MAX_ROWS * MAX_COLS]; // TODO: Reduce this to only the few nodes with reqs
+    // Could reduce this to only the few nodes with reqs
+    int prereq_state[MAX_ROWS * MAX_COLS];
 } MemoKey;
 
 typedef struct MemoNode {
@@ -85,7 +86,6 @@ void memo_put(const MemoKey* key, long long value) {
 
 Tree trees[3];
 
-// Function to extract prerequisite state from full allocation
 void extract_prereq_state(
         int tree_id,
         int allocations[][MAX_COLS],
@@ -146,7 +146,8 @@ long long count_tree_allocations(
     int allocations[][MAX_COLS]);
 
 
-// Helper function to distribute points within a row
+// recursively allocate points to cells within a single row
+// then call the count_tree_allocations to proceed to the next row
 long long distribute_in_row(
         int tree_id,
         int row,
@@ -190,7 +191,7 @@ long long distribute_in_row(
                     tree_id,
                     row,
                     col,
-                    total_spent + alloc,  // should be total_spent only?
+                    total_spent,
                     allocations)) {
                 can_allocate = false;
             }
@@ -294,7 +295,7 @@ void initialize_trees() {
         }
     }
 
-    // Initialize Fury tree  
+    // Initialize Fury tree
     trees[1].num_rows = 7;
     int fury_row_sizes[] = {2, 2, 4, 3, 3, 2, 1};
     memcpy(trees[1].row_sizes, fury_row_sizes, sizeof(fury_row_sizes));
@@ -400,6 +401,24 @@ int main(int argc, char *argv[]) {
     for (int i = 0; i <= MAX_POINTS; i++) {
         printf("Ways to allocate %d points: %lld\n", i, combined[i]);
     }
+
+    printf("\nWays to allocate n points to each tree individually, or between any trees:\n");
+    printf("\n| Points|             ARMS|             FURY|             PROT|            TOTAL|\n");
+    printf("---------------------------------------------------------------------------------\n");
+    for (int i = 0; i < MAX_POINTS; ) {
+        printf("|%7d|%17lld|%17lld|%17lld|%17lld|\n",
+               i, tree_distributions[0][i],
+               tree_distributions[1][i],
+               tree_distributions[2][i],
+               combined[i]);
+        i += (i < 10) ? 1 : 5;
+    }
+    printf("|%7d|%17lld|%17lld|%17lld|%17lld|\n\n",
+           MAX_POINTS, tree_distributions[0][MAX_POINTS],
+           tree_distributions[1][MAX_POINTS],
+           tree_distributions[2][MAX_POINTS],
+           combined[MAX_POINTS]);
+
 
     // Cleanup
     for (int tree = 0; tree < 3; tree++) {
