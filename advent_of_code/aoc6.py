@@ -31,16 +31,17 @@ def aoc6p2():
 
     val_ix = 0
     for op in operators:
-        val = 1 if op == '*' else 0
+        col_val = 1 if op == '*' else 0
+        # Stop at each empty string, which indicates the end of the column.
         while n := transposed[val_ix]:
             if op == '*':
-                val *= int(n)
+                col_val *= int(n)
             elif op == '+':
-                val += int(n)
+                col_val += int(n)
             else:
                 raise ValueError(f"Invalid operator: {op}")
             val_ix += 1
-        result += val
+        result += col_val
         val_ix += 1
 
     print(f"Sum of results: {result}")
