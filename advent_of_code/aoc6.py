@@ -51,20 +51,20 @@ def aoc6p1():
     lines = []
     with open("aoc6_data", "r") as f:
         while line := f.readline().strip():
-            entries = line.split(" ")
-            lines.append(entries)
-    lines = [[entry for entry in line if entry] for line in lines]
+            words = line.split(" ")
+            lines.append(words)
+    lines = [[word for word in line if word] for line in lines]
 
     values = lines[:-1]
     operators = lines[-1]
-    for i, op in enumerate(operators):
-        column = [row[i] for row in values]
+    for col_ix, op in enumerate(operators):
+        col_vals = [row[col_ix] for row in values]
         if op == '*':
-            col_res = math.prod([int(value) for value in column])
+            col_res = math.prod([int(value) for value in col_vals])
         elif op == '+':
-            col_res = sum([int(value) for value in column])
+            col_res = sum([int(value) for value in col_vals])
         else:
-            raise ValueError(f"Invalid column: {column}")
+            raise ValueError(f"Invalid column: {col_vals}")
         result += col_res
 
     print(f"Sum of results: {result}")
